@@ -18,12 +18,11 @@ namespace T4Toolbox.VisualStudio
     {
         public static IVsHierarchy AsHierarchy(this Project project)
         {
-            using (var serviceProvider = new ServiceProvider((IServiceProvider)project.DTE))
+            using (ServiceProvider serviceProvider = new ServiceProvider((IServiceProvider)project.DTE))
             {
-                var solution = (IVsSolution)serviceProvider.GetService(typeof(SVsSolution));
+                IVsSolution solution = (IVsSolution)serviceProvider.GetService(typeof(SVsSolution));
 
-                IVsHierarchy hierarchy;
-                ErrorHandler.ThrowOnFailure(solution.GetProjectOfUniqueName(project.UniqueName, out hierarchy));
+                ErrorHandler.ThrowOnFailure(solution.GetProjectOfUniqueName(project.UniqueName, out IVsHierarchy hierarchy));
 
                 return hierarchy;
             }
@@ -34,12 +33,9 @@ namespace T4Toolbox.VisualStudio
         /// </summary>
         public static string GetItemAttribute(this ProjectItem projectItem, string attributeName)
         {
-            IVsBuildPropertyStorage propertyStorage;
-            uint projectItemId;
-            GetBuildPropertyStorage(projectItem, out propertyStorage, out projectItemId);
+            GetBuildPropertyStorage(projectItem, out IVsBuildPropertyStorage propertyStorage, out uint projectItemId);
 
-            string value;
-            if (ErrorHandler.Failed(propertyStorage.GetItemAttribute(projectItemId, attributeName, out value)))
+            if (ErrorHandler.Failed(propertyStorage.GetItemAttribute(projectItemId, attributeName, out string value)))
             {
                 // Attribute doesn't exist
                 value = string.Empty;
@@ -51,8 +47,7 @@ namespace T4Toolbox.VisualStudio
         public static uint GetItemId(this ProjectItem projectItem)
         {
             IVsHierarchy hierarchy = projectItem.ContainingProject.AsHierarchy();
-            uint itemId;
-            ErrorHandler.ThrowOnFailure(hierarchy.ParseCanonicalName(projectItem.FileNames[1], out itemId));
+            ErrorHandler.ThrowOnFailure(hierarchy.ParseCanonicalName(projectItem.FileNames[1], out uint itemId));
             return itemId;
         }
 
@@ -61,9 +56,7 @@ namespace T4Toolbox.VisualStudio
         /// </summary>
         public static void SetItemAttribute(this ProjectItem projectItem, string attributeName, string attributeValue)
         {
-            IVsBuildPropertyStorage propertyStorage;
-            uint projectItemId;
-            GetBuildPropertyStorage(projectItem, out propertyStorage, out projectItemId);
+            GetBuildPropertyStorage(projectItem, out IVsBuildPropertyStorage propertyStorage, out uint projectItemId);
 
             ErrorHandler.ThrowOnFailure(propertyStorage.SetItemAttribute(projectItemId, attributeName, attributeValue));            
         }

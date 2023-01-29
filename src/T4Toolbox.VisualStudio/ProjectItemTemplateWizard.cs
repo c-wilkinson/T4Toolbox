@@ -28,7 +28,7 @@ namespace T4Toolbox.VisualStudio
         /// </value>
         protected Dictionary<string, string> ReplacementParameters
         {
-            get { return this.replacementParameters; }
+            get { return replacementParameters; }
         }
 
         /// <summary>
@@ -73,7 +73,7 @@ namespace T4Toolbox.VisualStudio
         /// </remarks>
         public virtual void RunFinished()
         {
-            this.replacementParameters = null;
+            replacementParameters = null;
         }
 
         /// <summary>
@@ -96,7 +96,7 @@ namespace T4Toolbox.VisualStudio
         /// </remarks>
         public virtual void RunStarted(object automationObject, Dictionary<string, string> replacementsDictionary, WizardRunKind runKind, object[] customParams)
         {
-            this.replacementParameters = replacementsDictionary;
+            replacementParameters = replacementsDictionary;
         }
 
         /// <summary>

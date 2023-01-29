@@ -7,20 +7,24 @@ namespace T4Toolbox.VisualStudio
     using System;
     using System.CodeDom.Compiler;
     using System.Collections.Generic;
-    using System.Diagnostics;
     using System.Diagnostics.CodeAnalysis;
     using System.Globalization;
     using System.IO;
     using System.Linq;
     using System.Runtime.InteropServices;
     using System.Text;
+
     using EnvDTE;
+
     using EnvDTE80;
+
     using Microsoft.Build.Execution;
     using Microsoft.VisualStudio;
+    using Microsoft.VisualStudio.Shell;
     using Microsoft.VisualStudio.Shell.Interop;
     using Microsoft.VisualStudio.TextTemplating;
     using Microsoft.VisualStudio.TextTemplating.VSHost;
+
     using VSLangProj;
 
     /// <summary>
@@ -34,61 +38,65 @@ namespace T4Toolbox.VisualStudio
         private readonly string inputDirectory;
         private readonly OutputFile[] outputFiles;
         private readonly IDictionary<string, Project> projects;
-        private readonly IServiceProvider serviceProvider;
+        private readonly IAsyncServiceProvider2 serviceProvider;
         private readonly ITextTemplatingEngineHost templatingHost;
 
-        public OutputFileManager(IServiceProvider serviceProvider, string inputFile, OutputFile[] outputFiles)
+        public OutputFileManager(
+            IAsyncServiceProvider2 serviceProvider,
+            DTE dte,
+            ITextTemplatingEngineHost textTemplatingEngineHost,
+            string inputFile,
+            OutputFile[] outputFiles)
         {
             this.serviceProvider = serviceProvider;
+            this.dte = dte;
+            templatingHost = textTemplatingEngineHost;
             this.inputFile = inputFile;
-            this.inputDirectory = Path.GetDirectoryName(inputFile);
             this.outputFiles = outputFiles;
-            this.dte = (DTE)serviceProvider.GetService(typeof(DTE));
-            this.projects = GetAllProjects(this.dte.Solution);
-            this.input = this.dte.Solution.FindProjectItem(this.inputFile);
-            this.templatingHost = (ITextTemplatingEngineHost)this.serviceProvider.GetService(typeof(STextTemplating));
+
+            inputDirectory = Path.GetDirectoryName(inputFile);
+            projects = GetAllProjects(this.dte.Solution);
+            input = this.dte.Solution.FindProjectItem(this.inputFile);
         }
 
         /// <summary>
         /// Executes the logic necessary to update output files.
         /// </summary>
-        [SuppressMessage("Microsoft.Design", "CA1031:DoNotCatchGeneralExceptionTypes", Justification = "How else do we report an error from a background task?")]
-        public void DoWork()
+        public async System.Threading.Tasks.Task DoWorkAsync()
         {
             try
             {
-                this.DeleteOldOutputs();
-                List<OutputFile> outputsToSave = this.GetOutputFilesToSave().ToList();
-                this.CheckoutFiles(outputsToSave.Select(output => this.GetFullPath(output.Path)).ToArray());
-                this.SaveOutputFiles(outputsToSave);
-                this.ConfigureOutputFiles();
-                this.RecordLastOutputs();
+                DeleteOldOutputs();
+                List<OutputFile> outputsToSave = GetOutputFilesToSave().ToList();
+                await CheckoutFilesAsync(outputsToSave.Select(output => GetFullPath(output.Path)).ToArray());
+                await SaveOutputFilesAsync(outputsToSave);
+                ConfigureOutputFiles();
+                RecordLastOutputs();
             }
             catch (TransformationException e)
             {
                 // Expected error condition. Log message only.
-                this.LogError(e.Message); 
+                LogError(e.Message);
             }
             catch (Exception e)
             {
                 // Unexpected error. Log the whole thing, including its callstack.
-                this.LogError(e.ToString());
+                LogError(e.ToString());
             }
         }
 
         /// <summary>
         /// Performs validation tasks that require accessing Visual Studio automation model.
         /// </summary>
-        public void Validate()
+        public async System.Threading.Tasks.Task ValidateAsync()
         {
-            foreach (OutputFile output in this.outputFiles)
+            foreach (OutputFile output in outputFiles)
             {
-                Project project;
-                this.ValidateOutputProject(output, out project);
-                this.ValidateOutputDirectory(output, project);
+                ValidateOutputProject(output, out Project project);
+                ValidateOutputDirectory(output, project);
                 ValidateOutputItemType(output, project);
-                this.ValidateOutputEncoding(output);
-                this.ValidateOutputContent(output);
+                await ValidateOutputEncodingAsync(output);
+                ValidateOutputContent(output);
             }
         }
 
@@ -245,8 +253,7 @@ namespace T4Toolbox.VisualStudio
         {
             if (output.References.Count > 0)
             {
-                var project = projectItem.ContainingProject.Object as VSProject;
-                if (project == null)
+                if (!(projectItem.ContainingProject.Object is VSProject project))
                 {
                     throw new TransformationException(string.Format(CultureInfo.CurrentCulture, "Project {0} does not support references required by {1}", projectItem.ContainingProject.Name, projectItem.Name));
                 }
@@ -292,8 +299,7 @@ namespace T4Toolbox.VisualStudio
 
             if (parentCollection.Count == 0)
             {
-                var parent = parentCollection.Parent as ProjectItem;
-                if (parent != null && parent.Kind == EnvDTE.Constants.vsProjectItemKindPhysicalFolder)
+                if (parentCollection.Parent is ProjectItem parent && parent.Kind == EnvDTE.Constants.vsProjectItemKindPhysicalFolder)
                 {
                     DeleteProjectItem(parent);
                 }
@@ -305,7 +311,7 @@ namespace T4Toolbox.VisualStudio
         /// </summary>
         private static IDictionary<string, Project> GetAllProjects(Solution solution)
         {
-            var projects = new Dictionary<string, Project>(StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, Project> projects = new Dictionary<string, Project>(StringComparer.OrdinalIgnoreCase);
             foreach (Project project in solution.Projects)
             {
                 AddAllProjects(project, projects);
@@ -319,9 +325,9 @@ namespace T4Toolbox.VisualStudio
         /// </summary>
         private static ICollection<string> GetAvailableItemTypes(Project project)
         {
-            var itemTypes = new List<string> { ItemType.None, ItemType.Compile, ItemType.Content, ItemType.EmbeddedResource };
+            List<string> itemTypes = new List<string> { ItemType.None, ItemType.Compile, ItemType.Content, ItemType.EmbeddedResource };
 
-            var projectInstance = new ProjectInstance(project.FullName);
+            ProjectInstance projectInstance = new ProjectInstance(project.FullName);
             foreach (ProjectItemInstance item in projectInstance.Items)
             {
                 if (item.ItemType == "AvailableItemName")
@@ -354,18 +360,16 @@ namespace T4Toolbox.VisualStudio
                 return;
             }
 
-            IVsHierarchy hierarchy;
-            uint itemId;
-            IntPtr persistDocDataPointer;
-            uint cookie;
-            ErrorHandler.ThrowOnFailure(runningDocumentTable.FindAndLockDocument((uint)_VSRDTFLAGS.RDT_NoLock, outputFilePath, out hierarchy, out itemId, out persistDocDataPointer, out cookie));
+#pragma warning disable IDE0059 // Unnecessary assignment of a value
+            ErrorHandler.ThrowOnFailure(runningDocumentTable.FindAndLockDocument((uint)_VSRDTFLAGS.RDT_NoLock, outputFilePath, out IVsHierarchy hierarchy, out uint itemId, out IntPtr persistDocDataPointer, out uint cookie));
+#pragma warning restore IDE0059 // Unnecessary assignment of a value
             if (persistDocDataPointer == IntPtr.Zero)
             {
                 // Document is not currently opened in Visual Studio editor. 
                 return;
             }
 
-            var persistDocData = (IVsPersistDocData)Marshal.GetObjectForIUnknown(persistDocDataPointer);
+            IVsPersistDocData persistDocData = (IVsPersistDocData)Marshal.GetObjectForIUnknown(persistDocDataPointer);
             ErrorHandler.ThrowOnFailure(persistDocData.ReloadDocData((uint)(_VSRELOADDOCDATA.RDD_IgnoreNextFileChange | _VSRELOADDOCDATA.RDD_RemoveUndoStack)));
         }
 
@@ -390,9 +394,7 @@ namespace T4Toolbox.VisualStudio
                 return true;
             }
 
-            var parentItem1 = collection1.Parent as ProjectItem;
-            var parentItem2 = collection2.Parent as ProjectItem;
-            if (parentItem1 != null && parentItem2 != null)
+            if (collection1.Parent is ProjectItem parentItem1 && collection2.Parent is ProjectItem parentItem2)
             {
                 if (!string.Equals(parentItem1.Name, parentItem2.Name, StringComparison.OrdinalIgnoreCase))
                 {
@@ -402,9 +404,7 @@ namespace T4Toolbox.VisualStudio
                 return Same(parentItem1.Collection, parentItem2.Collection);
             }
 
-            var parentProject1 = collection1.Parent as Project;
-            var parentProject2 = collection2.Parent as Project;
-            if (parentProject1 != null && parentProject2 != null)
+            if (collection1.Parent is Project parentProject1 && collection2.Parent is Project parentProject2)
             {
                 return string.Equals(parentProject1.FullName, parentProject2.FullName, StringComparison.OrdinalIgnoreCase);
             }
@@ -429,7 +429,7 @@ namespace T4Toolbox.VisualStudio
         /// </summary>
         private void DeleteOldOutputs()
         {
-            string lastOutputs = this.input.GetItemAttribute(ItemMetadata.LastOutputs);
+            string lastOutputs = input.GetItemAttribute(ItemMetadata.LastOutputs);
 
             // Delete all files recorded in the log that were not regenerated
             string[] logEntries = lastOutputs.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
@@ -443,16 +443,16 @@ namespace T4Toolbox.VisualStudio
                     continue;
                 }
 
-                string absolutePath = this.GetFullPath(relativePath);
+                string absolutePath = GetFullPath(relativePath);
 
                 // Skip the file if it was regenerated during current transformation
-                if (this.outputFiles.Any(output => string.Equals(this.GetFullPath(output.Path), absolutePath, StringComparison.OrdinalIgnoreCase)))
+                if (outputFiles.Any(output => string.Equals(GetFullPath(output.Path), absolutePath, StringComparison.OrdinalIgnoreCase)))
                 {
                     continue;
                 }
 
                 // The file wasn't regenerated, delete it from the solution, source control and file storage
-                ProjectItem projectItem = this.dte.Solution.FindProjectItem(absolutePath);
+                ProjectItem projectItem = dte.Solution.FindProjectItem(absolutePath);
                 if (projectItem != null)
                 {
                     DeleteProjectItem(projectItem);
@@ -471,7 +471,7 @@ namespace T4Toolbox.VisualStudio
         /// </returns>
         private ProjectItems FindProjectItemCollection(OutputFile output)
         {
-            string outputFilePath = this.GetFullPath(output.Path);
+            string outputFilePath = GetFullPath(output.Path);
             ProjectItems collection; // collection to which output file needs to be added
             string relativePath; // path from the collection to the file
             string basePath; // absolute path to the directory to which an item is being added
@@ -479,7 +479,7 @@ namespace T4Toolbox.VisualStudio
             if (!string.IsNullOrEmpty(output.Project))
             {
                 // If output file needs to be added to another project
-                Project project = this.projects[this.GetFullPath(output.Project)];
+                Project project = projects[GetFullPath(output.Project)];
                 collection = project.ProjectItems;
                 relativePath = FileMethods.GetRelativePath(project.FullName, outputFilePath);
                 basePath = Path.GetDirectoryName(project.FullName);
@@ -487,16 +487,16 @@ namespace T4Toolbox.VisualStudio
             else if (!string.IsNullOrEmpty(output.Directory))
             {
                 // If output file needs to be added to another folder of the current project
-                collection = this.input.ContainingProject.ProjectItems;
-                relativePath = FileMethods.GetRelativePath(this.input.ContainingProject.FullName, outputFilePath);
-                basePath = Path.GetDirectoryName(this.input.ContainingProject.FullName);
+                collection = input.ContainingProject.ProjectItems;
+                relativePath = FileMethods.GetRelativePath(input.ContainingProject.FullName, outputFilePath);
+                basePath = Path.GetDirectoryName(input.ContainingProject.FullName);
             }
             else
             {
                 // Add the output file to the list of children of the input file
-                collection = this.input.ProjectItems;
-                relativePath = FileMethods.GetRelativePath(this.inputFile, outputFilePath);
-                basePath = Path.GetDirectoryName(this.inputFile);
+                collection = input.ProjectItems;
+                relativePath = FileMethods.GetRelativePath(inputFile, outputFilePath);
+                basePath = Path.GetDirectoryName(inputFile);
             }
 
             // make sure that all folders in the file path exist in the project.
@@ -523,7 +523,7 @@ namespace T4Toolbox.VisualStudio
         {
             if (!Path.IsPathRooted(path))
             {
-                path = Path.Combine(this.inputDirectory, path);
+                path = Path.Combine(inputDirectory, path);
             }
 
             return Path.GetFullPath(path);
@@ -531,11 +531,11 @@ namespace T4Toolbox.VisualStudio
 
         private string GetLastGenOutputFullPath()
         {
-            string relativePath = this.input.GetItemAttribute(ItemMetadata.LastGenOutput);
+            string relativePath = input.GetItemAttribute(ItemMetadata.LastGenOutput);
             if (!string.IsNullOrEmpty(relativePath))
             {
-                string projectDirectory = Path.GetDirectoryName(this.input.ContainingProject.FullName);
-                return Path.GetFullPath(Path.Combine(projectDirectory, relativePath));                
+                string projectDirectory = Path.GetDirectoryName(input.ContainingProject.FullName);
+                return Path.GetFullPath(Path.Combine(projectDirectory, relativePath));
             }
 
             return string.Empty;
@@ -543,12 +543,12 @@ namespace T4Toolbox.VisualStudio
 
         private void LogError(string message)
         {
-            this.templatingHost.LogErrors(new CompilerErrorCollection { new CompilerError { ErrorText = message, FileName = this.inputFile } });
+            templatingHost.LogErrors(new CompilerErrorCollection { new CompilerError { ErrorText = message, FileName = inputFile } });
         }
 
         private void LogWarning(string message)
         {
-            this.templatingHost.LogErrors(new CompilerErrorCollection { new CompilerError { ErrorText = message, FileName = this.inputFile, IsWarning = true } });
+            templatingHost.LogErrors(new CompilerErrorCollection { new CompilerError { ErrorText = message, FileName = inputFile, IsWarning = true } });
         }
 
         /// <summary>
@@ -556,11 +556,11 @@ namespace T4Toolbox.VisualStudio
         /// </summary>
         private void RecordLastOutputs()
         {
-            string lastGenOutputFullPath = this.GetLastGenOutputFullPath();
+            string lastGenOutputFullPath = GetLastGenOutputFullPath();
 
             // Create a list of files that may be regenerated/overwritten in the future
-            var outputFileList = new List<string>();
-            foreach (OutputFile output in this.outputFiles)
+            List<string> outputFileList = new List<string>();
+            foreach (OutputFile output in outputFiles)
             {
                 // Don't store the name of file user wants to preserve so that we don't deleted next time.
                 if (output.PreserveExistingFile)
@@ -569,14 +569,14 @@ namespace T4Toolbox.VisualStudio
                 }
 
                 // Don't store the name of default output file second time
-                string outputFullPath = this.GetFullPath(output.Path);
+                string outputFullPath = GetFullPath(output.Path);
                 if (string.Equals(lastGenOutputFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
 
                 // Store a relative path from the input file to the output file
-                outputFileList.Add(FileMethods.GetRelativePath(this.inputFile, outputFullPath));
+                outputFileList.Add(FileMethods.GetRelativePath(inputFile, outputFullPath));
             }
 
             // If more than one output file was generated, write one file per line in alphabetical order for readability
@@ -588,14 +588,14 @@ namespace T4Toolbox.VisualStudio
             }
 
             // Write the file list to the project file
-            this.input.SetItemAttribute(ItemMetadata.LastOutputs, lastOutputs);
+            input.SetItemAttribute(ItemMetadata.LastOutputs, lastOutputs);
         }
 
         private IEnumerable<OutputFile> GetOutputFilesToSave()
         {
-            foreach (OutputFile output in this.outputFiles)
+            foreach (OutputFile output in outputFiles)
             {
-                string outputFilePath = this.GetFullPath(output.Path);
+                string outputFilePath = GetFullPath(output.Path);
 
                 // Don't do anything unless the output file has changed and needs to be overwritten
                 if (File.Exists(outputFilePath))
@@ -610,24 +610,24 @@ namespace T4Toolbox.VisualStudio
             }
         }
 
-        private void SaveOutputFiles(IEnumerable<OutputFile> outputsToSave)
+        private async System.Threading.Tasks.Task SaveOutputFilesAsync(IEnumerable<OutputFile> outputsToSave)
         {
-            var runningDocumentTable = (IVsRunningDocumentTable)this.serviceProvider.GetService(typeof(SVsRunningDocumentTable));
+            IVsRunningDocumentTable runningDocumentTable = (IVsRunningDocumentTable)await serviceProvider.GetServiceAsync(typeof(SVsRunningDocumentTable));
             foreach (OutputFile output in outputsToSave)
             {
-                string outputFilePath = this.GetFullPath(output.Path);
+                string outputFilePath = GetFullPath(output.Path);
                 Directory.CreateDirectory(Path.GetDirectoryName(outputFilePath));
                 File.WriteAllText(outputFilePath, output.Content.ToString(), output.Encoding);
                 ReloadDocument(runningDocumentTable, outputFilePath);
-            }            
+            }
         }
 
         /// <summary>
         /// Uses the <see cref="SVsQueryEditQuerySave"/> service to checkout specified files with a minimum number of visual prompts.
         /// </summary>
-        private void CheckoutFiles(string[] filePaths)
+        private async System.Threading.Tasks.Task CheckoutFilesAsync(string[] filePaths)
         {
-            var queryService = (IVsQueryEditQuerySave2)this.serviceProvider.GetService(typeof(SVsQueryEditQuerySave));
+            IVsQueryEditQuerySave2 queryService = (IVsQueryEditQuerySave2)await serviceProvider.GetServiceAsync(typeof(SVsQueryEditQuerySave));
             if (queryService == null)
             {
                 // SVsQueryEditQueryService is not available, don't try to check out files.
@@ -637,15 +637,13 @@ namespace T4Toolbox.VisualStudio
             // Call QueryEditFiles to perform the action specified in the Source Control/Editing setting of the Visual Studio Options dialog.
             // Although, technically, we are not "editing" the generated files, we call this method because, unlike QuerySaveFiles, it displays 
             // a single visual prompt for all files that need to be checked out.
-            uint editInfo;
-            uint editResult;
-            ErrorHandler.ThrowOnFailure(queryService.QueryEditFiles((uint)tagVSQueryEditFlags.QEF_DisallowInMemoryEdits, filePaths.Length, filePaths, null, null, out editResult, out editInfo));
+            ErrorHandler.ThrowOnFailure(queryService.QueryEditFiles((uint)tagVSQueryEditFlags.QEF_DisallowInMemoryEdits, filePaths.Length, filePaths, null, null, out uint editResult, out uint editInfo));
             if (editResult == (uint)tagVSQueryEditResult.QER_EditOK)
             {
                 return;
             }
 
-            if (editResult == (uint)tagVSQueryEditResult.QER_NoEdit_UserCanceled && 
+            if (editResult == (uint)tagVSQueryEditResult.QER_NoEdit_UserCanceled &&
                 (editInfo & (uint)tagVSQueryEditResultFlags.QER_CheckoutCanceledOrFailed) == (uint)tagVSQueryEditResultFlags.QER_CheckoutCanceledOrFailed)
             {
                 throw CheckoutAbortedException();
@@ -656,8 +654,7 @@ namespace T4Toolbox.VisualStudio
             ErrorHandler.ThrowOnFailure(queryService.BeginQuerySaveBatch()); // Allow the user to cancel check-out-on-save for all files in the batch
             try
             {
-                uint saveResult;
-                ErrorHandler.ThrowOnFailure(queryService.QuerySaveFiles(0, filePaths.Length, filePaths, null, null, out saveResult));
+                ErrorHandler.ThrowOnFailure(queryService.QuerySaveFiles(0, filePaths.Length, filePaths, null, null, out uint saveResult));
                 if (saveResult != (uint)tagVSQuerySaveResult.QSR_SaveOK)
                 {
                     throw CheckoutAbortedException();
@@ -666,7 +663,7 @@ namespace T4Toolbox.VisualStudio
             finally
             {
                 ErrorHandler.ThrowOnFailure(queryService.EndQuerySaveBatch());
-            }            
+            }
         }
 
         /// <summary>
@@ -680,10 +677,10 @@ namespace T4Toolbox.VisualStudio
         /// </remarks>
         private void ConfigureOutputFile(OutputFile output)
         {
-            string outputFilePath = this.GetFullPath(output.Path);
+            string outputFilePath = GetFullPath(output.Path);
 
-            ProjectItem outputItem = this.dte.Solution.FindProjectItem(outputFilePath);
-            ProjectItems collection = this.FindProjectItemCollection(output);
+            ProjectItem outputItem = dte.Solution.FindProjectItem(outputFilePath);
+            ProjectItems collection = FindProjectItemCollection(output);
 
             if (outputItem == null)
             {
@@ -709,9 +706,9 @@ namespace T4Toolbox.VisualStudio
         /// </summary>
         private void ConfigureOutputFiles()
         {
-            foreach (OutputFile output in this.outputFiles)
+            foreach (OutputFile output in outputFiles)
             {
-                this.ConfigureOutputFile(output);
+                ConfigureOutputFile(output);
             }
         }
 
@@ -720,7 +717,7 @@ namespace T4Toolbox.VisualStudio
             // If additional output file is empty, warn the user to encourage them to cleanup their code generator
             if (!string.IsNullOrEmpty(output.File) && IsEmptyOrWhiteSpace(output.Content))
             {
-                this.LogWarning(string.Format(CultureInfo.CurrentCulture, "Generated output file '{0}' is empty.", output.Path));
+                LogWarning(string.Format(CultureInfo.CurrentCulture, "Generated output file '{0}' is empty.", output.Path));
             }
         }
 
@@ -729,7 +726,7 @@ namespace T4Toolbox.VisualStudio
             if (!string.IsNullOrEmpty(output.Directory))
             {
                 string projectPath = Path.GetDirectoryName(outputProject.FullName);
-                string outputPath = this.GetFullPath(output.Path);
+                string outputPath = GetFullPath(output.Path);
                 if (!outputPath.StartsWith(projectPath, StringComparison.OrdinalIgnoreCase))
                 {
                     throw new TransformationException(string.Format(CultureInfo.CurrentCulture, "Output file {0} is located outside of directory of target project {1}", outputPath, outputProject.FullName));
@@ -737,20 +734,20 @@ namespace T4Toolbox.VisualStudio
             }
         }
 
-        private void ValidateOutputEncoding(OutputFile output)
+        private async System.Threading.Tasks.Task ValidateOutputEncodingAsync(OutputFile output)
         {
             if (string.IsNullOrEmpty(output.File))
             {
-                object service = this.serviceProvider.GetService(typeof(STextTemplating));
+                object service = await serviceProvider.GetServiceAsync(typeof(STextTemplating));
 
                 // Try to change the encoding
-                var host = (ITextTemplatingEngineHost)service;
+                ITextTemplatingEngineHost host = (ITextTemplatingEngineHost)service;
                 host.SetOutputEncoding(output.Encoding, false);
 
                 // Check if the encoding was already set by the output directive and cannot be changed
-                var components = (ITextTemplatingComponents)service;
-                var callback = components.Callback as TextTemplatingCallback; // Callback can be provided by user code, not only by T4.
-                if (callback != null && !object.Equals(callback.OutputEncoding, output.Encoding))
+                ITextTemplatingComponents components = (ITextTemplatingComponents)service;
+                // Callback can be provided by user code, not only by T4.
+                if (components.Callback is TextTemplatingCallback callback && !object.Equals(callback.OutputEncoding, output.Encoding))
                 {
                     throw new TransformationException(
                         string.Format(
@@ -766,11 +763,11 @@ namespace T4Toolbox.VisualStudio
         {
             if (string.IsNullOrEmpty(output.Project))
             {
-                project = this.input.ContainingProject;
+                project = input.ContainingProject;
             }
             else
             {
-                if (!this.projects.TryGetValue(this.GetFullPath(output.Project), out project))
+                if (!projects.TryGetValue(GetFullPath(output.Project), out project))
                 {
                     throw new TransformationException(string.Format(CultureInfo.CurrentCulture, "Target project {0} does not belong to the solution", output.Project));
                 }

@@ -5,9 +5,10 @@
 namespace T4Toolbox.VisualStudio
 {
     using System;
-    using System.ComponentModel.Design;
-    using System.Globalization;
     using System.IO;
+    using System.Threading;
+    using System.Threading.Tasks;
+    using Microsoft.VisualStudio.Shell;
     using Microsoft.VisualStudio.TextTemplating;
     using Microsoft.VisualStudio.TextTemplating.VSHost;
 
@@ -16,30 +17,31 @@ namespace T4Toolbox.VisualStudio
     /// </summary>
     internal class TemplateLocator
     {
-        protected TemplateLocator(IServiceProvider serviceProvider)
+        protected TemplateLocator(IAsyncServiceProvider2 serviceProvider)
         {
-            this.ServiceProvider = serviceProvider;
+            ServiceProvider = serviceProvider;
         }
 
-        protected IServiceProvider ServiceProvider { get; private set; }
+        protected IAsyncServiceProvider2 ServiceProvider { get; private set; }
 
         /// <summary>
         /// Returns full path to the template file resolved using T4 include rules.
         /// </summary>
         public virtual bool LocateTemplate(string fullInputPath, ref string templatePath)
         {
-            var textTemplating = (ITextTemplating)this.ServiceProvider.GetService(typeof(STextTemplating));
+            ITextTemplating textTemplating = (ITextTemplating)ServiceProvider.GetServiceAsync(typeof(STextTemplating)).Result;
 
             // Use the built-in "include" resolution logic to find the template.
-            string[] references;
-            textTemplating.PreprocessTemplate(Path.ChangeExtension(fullInputPath, ".tt"), string.Empty, null, "DummyClass", string.Empty, out references);
+#pragma warning disable IDE0059 // Unnecessary assignment of a value
+            textTemplating.PreprocessTemplate(Path.ChangeExtension(fullInputPath, ".tt"), string.Empty, null, "DummyClass", string.Empty, out string[] references);
+#pragma warning restore IDE0059 // Unnecessary assignment of a value
 
-            var engineHost = (ITextTemplatingEngineHost)textTemplating;
+            ITextTemplatingEngineHost engineHost = (ITextTemplatingEngineHost)textTemplating;
 
-            string templateFileContent;
-            string templateFullPath;
-            if (engineHost.LoadIncludeText(templatePath, out templateFileContent, out templateFullPath))
+#pragma warning disable IDE0059 // Unnecessary assignment of a value
+            if (engineHost.LoadIncludeText(templatePath, out string templateFileContent, out string templateFullPath))
             {
+#pragma warning restore IDE0059 // Unnecessary assignment of a value
                 templatePath = Path.GetFullPath(templateFullPath);
                 return true;
             }
@@ -47,19 +49,19 @@ namespace T4Toolbox.VisualStudio
             return false;
         }
 
-        internal static void Register(IServiceContainer serviceContainer)
+        internal static void Register(IAsyncServiceContainer serviceContainer)
         {
             serviceContainer.AddService(typeof(TemplateLocator), CreateService, true);
         }
 
-        private static object CreateService(IServiceContainer container, Type serviceType)
+        private static Task<object> CreateService(IAsyncServiceContainer container, CancellationToken cancellationToken, Type serviceType)
         {
             if (serviceType == typeof(TemplateLocator))
             {
-                return new TemplateLocator(container);                
+                return System.Threading.Tasks.Task.FromResult<object>(new TemplateLocator(container as IAsyncServiceProvider2));
             }
 
-            return null;
+            return System.Threading.Tasks.Task.FromResult<object>(null);
         }
     }
 }
