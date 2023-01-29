@@ -33,16 +33,16 @@ namespace T4Toolbox.VisualStudio
         protected override byte[] GenerateCode(string inputFileName, string inputFileContent)
         {
             // Begin a new error session to make sure errors we log here are not removed when the base method is called.
-            this.TextTemplating.BeginErrorSession();
+            TextTemplating.BeginErrorSession();
             try
             {
                 // Pass the name and content of the input file to the transformation
-                var sessionHost = (ITextTemplatingSessionHost)this.TextTemplating;
+                ITextTemplatingSessionHost sessionHost = (ITextTemplatingSessionHost)TextTemplating;
                 sessionHost.Session[TransformationContext.InputFileNameKey] = inputFileName;
                 sessionHost.Session[TransformationContext.InputFileContentKey] = inputFileContent;
 
                 // Resolve template file name based on input metadata
-                if (this.ResolveTemplate(ref inputFileName, ref inputFileContent))
+                if (ResolveTemplate(ref inputFileName, ref inputFileContent))
                 {
                     // Perform default transformation of the template
                     return base.GenerateCode(inputFileName, inputFileContent);
@@ -52,15 +52,14 @@ namespace T4Toolbox.VisualStudio
             }
             finally
             {
-                this.TextTemplating.EndErrorSession();
+                TextTemplating.EndErrorSession();
             }
         }
 
         private static string ResolveFromTemplateMetadata(IVsHierarchy hierarchy, uint inputFileId)
         {
-            string templateFileName;
-            var propertyStorage = (IVsBuildPropertyStorage)hierarchy;
-            if (ErrorHandler.Succeeded(propertyStorage.GetItemAttribute(inputFileId, ItemMetadata.Template, out templateFileName)))
+            IVsBuildPropertyStorage propertyStorage = (IVsBuildPropertyStorage)hierarchy;
+            if (ErrorHandler.Succeeded(propertyStorage.GetItemAttribute(inputFileId, ItemMetadata.Template, out string templateFileName)))
             {
                 return templateFileName;
             }
@@ -70,31 +69,30 @@ namespace T4Toolbox.VisualStudio
 
         private void LogError(string fileName, string format, params object[] args)
         {
-            var engineHost = (ITextTemplatingEngineHost)this.TextTemplating;
+            ITextTemplatingEngineHost engineHost = (ITextTemplatingEngineHost)TextTemplating;
             string errorText = string.Format(CultureInfo.CurrentCulture, format, args);
-            var error = new CompilerError { FileName = fileName, ErrorText = errorText };
+            CompilerError error = new CompilerError { FileName = fileName, ErrorText = errorText };
             engineHost.LogErrors(new CompilerErrorCollection(new[] { error }));
         }
 
         private bool ResolveTemplate(ref string inputFileName, ref string inputFileContent)
         {
             // Try getting template file name from the MSBuild metadata of the input file
-            var hierarchy = (IVsHierarchy)this.GetService(typeof(IVsHierarchy));
-            uint inputFileId;
-            ErrorHandler.ThrowOnFailure(hierarchy.ParseCanonicalName(inputFileName, out inputFileId));
+            IVsHierarchy hierarchy = (IVsHierarchy)GetService(typeof(IVsHierarchy));
+            ErrorHandler.ThrowOnFailure(hierarchy.ParseCanonicalName(inputFileName, out uint inputFileId));
 
             string templateFileName = ResolveFromTemplateMetadata(hierarchy, inputFileId) 
-                ?? this.ResolveFromLastGenOutputMetadata(hierarchy, inputFileId, inputFileName);
+                ?? ResolveFromLastGenOutputMetadata(hierarchy, inputFileId, inputFileName);
             if (string.IsNullOrWhiteSpace(templateFileName))
             {
-                this.LogError(inputFileName, "Input file does not specify Template metadata element required by {0}.", TemplatedFileGenerator.Name);
+                LogError(inputFileName, "Input file does not specify Template metadata element required by {0}.", TemplatedFileGenerator.Name);
                 return true;
             }
 
-            var templateLocator = (TemplateLocator)this.GlobalServiceProvider.GetService(typeof(TemplateLocator));
+            TemplateLocator templateLocator = T4ToolboxPackage.Instance.GetServiceAsync(typeof(TemplateLocator)).Result as TemplateLocator;
             if (!templateLocator.LocateTemplate(inputFileName, ref templateFileName))
             {
-                this.LogError(inputFileName, "Template '{0}' could not be found.", templateFileName);
+                LogError(inputFileName, "Template '{0}' could not be found.", templateFileName);
                 return false;
             }
 
@@ -105,10 +103,9 @@ namespace T4Toolbox.VisualStudio
 
         private string ResolveFromLastGenOutputMetadata(IVsHierarchy hierarchy, uint inputFileId, string inputFileName)
         {
-            var propertyStorage = (IVsBuildPropertyStorage)hierarchy;
+            IVsBuildPropertyStorage propertyStorage = (IVsBuildPropertyStorage)hierarchy;
 
-            string lastGenOutputFileName;
-            if (ErrorHandler.Succeeded(propertyStorage.GetItemAttribute(inputFileId, ItemMetadata.LastGenOutput, out lastGenOutputFileName)) &&
+            if (ErrorHandler.Succeeded(propertyStorage.GetItemAttribute(inputFileId, ItemMetadata.LastGenOutput, out string lastGenOutputFileName)) &&
                 string.Equals(".tt", Path.GetExtension(lastGenOutputFileName), StringComparison.OrdinalIgnoreCase))
             {
                 // Remove the script file from the project to prevent Visual Studio from deleting it
@@ -116,16 +113,16 @@ namespace T4Toolbox.VisualStudio
                 string lastGenOutputFilePath = Path.Combine(inputDirectory, lastGenOutputFileName);
                 string tempFilePath = Path.Combine(inputDirectory, Path.GetRandomFileName());
                 File.Move(lastGenOutputFilePath, tempFilePath);
-                uint lastGenOutputFileId;
-                ErrorHandler.ThrowOnFailure(hierarchy.ParseCanonicalName(lastGenOutputFilePath, out lastGenOutputFileId));
-                int result;
-                var project = (IVsProject2)hierarchy;
-                ErrorHandler.ThrowOnFailure(project.RemoveItem(default(uint), lastGenOutputFileId, out result));
+                ErrorHandler.ThrowOnFailure(hierarchy.ParseCanonicalName(lastGenOutputFilePath, out uint lastGenOutputFileId));
+                IVsProject2 project = (IVsProject2)hierarchy;
+#pragma warning disable IDE0059 // Unnecessary assignment of a value
+                ErrorHandler.ThrowOnFailure(project.RemoveItem(default, lastGenOutputFileId, out int result));
+#pragma warning restore IDE0059 // Unnecessary assignment of a value
                 File.Move(tempFilePath, lastGenOutputFilePath);
 
                 // Save name of the script file in the <Template> metadata item of the project item and refresh the Properties window
                 ErrorHandler.ThrowOnFailure(propertyStorage.SetItemAttribute(inputFileId, ItemMetadata.Template, lastGenOutputFileName));
-                var propertyBrowser = (IVSMDPropertyBrowser)this.GlobalServiceProvider.GetService(typeof(SVSMDPropertyBrowser));
+                IVSMDPropertyBrowser propertyBrowser = (IVSMDPropertyBrowser)GlobalServiceProvider.GetService(typeof(SVSMDPropertyBrowser));
                 propertyBrowser.Refresh();
 
                 return lastGenOutputFileName;

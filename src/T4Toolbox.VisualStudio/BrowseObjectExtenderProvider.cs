@@ -5,7 +5,10 @@
 namespace T4Toolbox.VisualStudio
 {
     using System;
+
     using EnvDTE;
+
+    using Microsoft.VisualStudio.Shell;
     using Microsoft.VisualStudio.Shell.Interop;
 
     /// <summary>
@@ -18,14 +21,14 @@ namespace T4Toolbox.VisualStudio
         private readonly string extenderCategory;
         private readonly ObjectExtenders objectExtenders;
         private readonly int providerCookie;
-        private readonly IServiceProvider serviceProvider;
+        private readonly IAsyncServiceProvider2 serviceProvider;
 
-        public BrowseObjectExtenderProvider(IServiceProvider serviceProvider, string extenderCategory)
+        public BrowseObjectExtenderProvider(IAsyncServiceProvider2 serviceProvider, ObjectExtenders objectExtenders, string extenderCategory)
         {
             this.serviceProvider = serviceProvider;
-            this.objectExtenders = (ObjectExtenders)serviceProvider.GetService(typeof(ObjectExtenders));
+            this.objectExtenders = objectExtenders;
             this.extenderCategory = extenderCategory;
-            this.providerCookie = this.objectExtenders.RegisterExtenderProvider(extenderCategory, BrowseObjectExtenderProvider.ExtenderName, this);
+            providerCookie = this.objectExtenders.RegisterExtenderProvider(extenderCategory, BrowseObjectExtenderProvider.ExtenderName, this);
         }
 
         public bool CanExtend(string extenderCategory, string extenderName, object extendee)
@@ -35,12 +38,12 @@ namespace T4Toolbox.VisualStudio
 
         public void Dispose()
         {
-            this.objectExtenders.UnregisterExtenderProvider(this.providerCookie);
+            objectExtenders.UnregisterExtenderProvider(providerCookie);
         }
 
         public object GetExtender(string extenderCategory, string extenderName, object extendee, IExtenderSite site, int extenderCookie)
         {
-            return new BrowseObjectExtender(this.serviceProvider, (IVsBrowseObject)extendee, site, extenderCookie);
+            return new BrowseObjectExtender(serviceProvider, (IVsBrowseObject)extendee, site, extenderCookie);
         }
     }
 }

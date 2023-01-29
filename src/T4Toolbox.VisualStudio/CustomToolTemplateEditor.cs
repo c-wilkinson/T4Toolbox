@@ -32,11 +32,13 @@ namespace T4Toolbox.VisualStudio
         {
             string templateFullPath = GetFullTemplatePath(context, (string)value);
 
-            var dialog = new OpenFileDialog();
-            dialog.Title = "Select Custom Tool Template";
-            dialog.FileName = Path.GetFileName(templateFullPath);
-            dialog.InitialDirectory = Path.GetDirectoryName(templateFullPath);
-            dialog.Filter = "Text Templates (*.tt)|*.tt|All Files (*.*)|*.*";
+            OpenFileDialog dialog = new OpenFileDialog
+            {
+                Title = "Select Custom Tool Template",
+                FileName = Path.GetFileName(templateFullPath),
+                InitialDirectory = Path.GetDirectoryName(templateFullPath),
+                Filter = "Text Templates (*.tt)|*.tt|All Files (*.*)|*.*"
+            };
 
             if (dialog.ShowDialog() == true)
             {
@@ -56,7 +58,7 @@ namespace T4Toolbox.VisualStudio
             }
 
             string templateFullPath = fileName;
-            var templateLocator = (TemplateLocator)context.GetService(typeof(TemplateLocator));
+            TemplateLocator templateLocator = (TemplateLocator)context.GetService(typeof(TemplateLocator));
             if (!templateLocator.LocateTemplate(inputFullPath, ref templateFullPath))
             {
                 return Path.Combine(Path.GetDirectoryName(inputFullPath), fileName);
@@ -80,14 +82,9 @@ namespace T4Toolbox.VisualStudio
 
         private static string GetFullInputPath(ITypeDescriptorContext context)
         {
-            var browseObject = (IVsBrowseObject)context.Instance;
-
-            IVsHierarchy hierarchy;
-            uint itemId;
-            ErrorHandler.ThrowOnFailure(browseObject.GetProjectItem(out hierarchy, out itemId));
-
-            string inputFileName;
-            ErrorHandler.ThrowOnFailure(hierarchy.GetCanonicalName(itemId, out inputFileName));
+            IVsBrowseObject browseObject = (IVsBrowseObject)context.Instance;
+            ErrorHandler.ThrowOnFailure(browseObject.GetProjectItem(out IVsHierarchy hierarchy, out uint itemId));
+            ErrorHandler.ThrowOnFailure(hierarchy.GetCanonicalName(itemId, out string inputFileName));
             return inputFileName;
         }
     }
