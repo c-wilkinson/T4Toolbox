@@ -30,7 +30,7 @@ namespace T4Toolbox.VisualStudio
 
             this.parameterType = parameterType;
             this.description = description;
-            this.converter = TypeDescriptor.GetConverter(parameterType);
+            converter = TypeDescriptor.GetConverter(parameterType);
         }
 
         public override Type ComponentType
@@ -40,12 +40,12 @@ namespace T4Toolbox.VisualStudio
 
         public override bool IsReadOnly
         {
-            get { return !this.converter.CanConvertTo(typeof(string)) || !this.converter.CanConvertFrom(typeof(string)); }
+            get { return !converter.CanConvertTo(typeof(string)) || !converter.CanConvertFrom(typeof(string)); }
         }
 
         public override Type PropertyType
         {
-            get { return this.parameterType; }
+            get { return parameterType; }
         }
 
         public override bool CanResetValue(object component)
@@ -55,42 +55,35 @@ namespace T4Toolbox.VisualStudio
 
         public override object GetValue(object component)
         {
-            IVsBuildPropertyStorage project;
-            uint itemId;
-            GetProjectItem(component, out project, out itemId);
+            GetProjectItem(component, out IVsBuildPropertyStorage project, out uint itemId);
 
-            string stringValue;
-            if (ErrorHandler.Failed(project.GetItemAttribute(itemId, this.Name, out stringValue)))
+            if (ErrorHandler.Failed(project.GetItemAttribute(itemId, Name, out string stringValue)))
             {
-                return this.GetDefaultValue();
+                return GetDefaultValue();
             }
 
-            return this.converter.ConvertFrom(stringValue);
+            return converter.ConvertFrom(stringValue);
         }
 
         public override void ResetValue(object component)
         {
-            IVsBuildPropertyStorage project;
-            uint itemId;
-            GetProjectItem(component, out project, out itemId);
+            GetProjectItem(component, out IVsBuildPropertyStorage project, out uint itemId);
 
-            ErrorHandler.ThrowOnFailure(project.SetItemAttribute(itemId, this.Name, null));
+            ErrorHandler.ThrowOnFailure(project.SetItemAttribute(itemId, Name, null));
         }
 
         public override void SetValue(object component, object value)
         {
-            IVsBuildPropertyStorage project;
-            uint itemId;
-            GetProjectItem(component, out project, out itemId);
+            GetProjectItem(component, out IVsBuildPropertyStorage project, out uint itemId);
 
-            if (object.Equals(value, this.GetDefaultValue()))
+            if (object.Equals(value, GetDefaultValue()))
             {
-                ErrorHandler.ThrowOnFailure(project.SetItemAttribute(itemId, this.Name, null));                
+                ErrorHandler.ThrowOnFailure(project.SetItemAttribute(itemId, Name, null));                
             }
             else
             {
-                string stringValue = this.converter.ConvertToInvariantString(value);
-                ErrorHandler.ThrowOnFailure(project.SetItemAttribute(itemId, this.Name, stringValue));                
+                string stringValue = converter.ConvertToInvariantString(value);
+                ErrorHandler.ThrowOnFailure(project.SetItemAttribute(itemId, Name, stringValue));                
             }
         }
 
@@ -102,14 +95,14 @@ namespace T4Toolbox.VisualStudio
         /// </remarks>
         public override bool ShouldSerializeValue(object component)
         {
-            return !object.Equals(this.GetValue(component), this.GetDefaultValue());
+            return !object.Equals(GetValue(component), GetDefaultValue());
         }
 
         protected override AttributeCollection CreateAttributeCollection()
         {
-            if (!string.IsNullOrWhiteSpace(this.description))
+            if (!string.IsNullOrWhiteSpace(description))
             {
-                return AttributeCollection.FromExisting(base.CreateAttributeCollection(), new DescriptionAttribute(this.description));
+                return AttributeCollection.FromExisting(base.CreateAttributeCollection(), new DescriptionAttribute(description));
             }
 
             return base.CreateAttributeCollection();
@@ -122,8 +115,7 @@ namespace T4Toolbox.VisualStudio
                 throw new ArgumentNullException("component");
             }
 
-            var parent = component as CustomToolParameters;
-            if (parent == null)
+            if (!(component is CustomToolParameters parent))
             {
                 throw new ArgumentException(
                     string.Format(
@@ -139,7 +131,7 @@ namespace T4Toolbox.VisualStudio
 
         private object GetDefaultValue()
         {
-            return this.parameterType.IsValueType && this.parameterType != typeof(void) ? Activator.CreateInstance(this.parameterType) : null;
+            return parameterType.IsValueType && parameterType != typeof(void) ? Activator.CreateInstance(parameterType) : null;
         }
     }
 }

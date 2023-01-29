@@ -31,7 +31,7 @@ namespace T4Toolbox.VisualStudio
                 throw new ArgumentNullException("projectItem");
             }
 
-            foreach (XElement metadata in this.GetMetadataItems())
+            foreach (XElement metadata in GetMetadataItems())
             {
                 projectItem.SetItemAttribute(metadata.Name.LocalName, metadata.Value);
             }
@@ -43,7 +43,7 @@ namespace T4Toolbox.VisualStudio
         /// <returns>An <see cref="IEnumerable{XElement}"/>, where each item represents a single metadata element.</returns>
         private IEnumerable<XElement> GetMetadataItems()
         {
-            string wizardData = this.ReplacementParameters["$wizarddata$"];
+            string wizardData = ReplacementParameters["$wizarddata$"];
             XElement root = XDocument.Parse(wizardData).Root;
             if (root == null)
             {

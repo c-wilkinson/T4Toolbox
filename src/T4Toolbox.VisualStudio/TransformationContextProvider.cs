@@ -8,10 +8,17 @@ namespace T4Toolbox.VisualStudio
     using System.ComponentModel.Design;
     using System.IO;
     using System.Linq;
+    using System.Threading;
+    using System.Threading.Tasks;
+
+    using EnvDTE;
+
     using Microsoft.VisualStudio;
     using Microsoft.VisualStudio.Shell;
     using Microsoft.VisualStudio.Shell.Interop;
+    using Microsoft.VisualStudio.TextTemplating;
     using Microsoft.VisualStudio.TextTemplating.VSHost;
+
     using T4Toolbox;
 
     /// <summary>
@@ -19,30 +26,27 @@ namespace T4Toolbox.VisualStudio
     /// </summary>
     internal class TransformationContextProvider : MarshalByRefObject, ITransformationContextProvider
     {
-        private readonly IServiceProvider serviceProvider;
+        private readonly IAsyncServiceProvider2 serviceProvider;
 
-        private TransformationContextProvider(IServiceProvider serviceProvider)
+        private TransformationContextProvider(IAsyncServiceProvider2 serviceProvider)
         {
             this.serviceProvider = serviceProvider;
         }
 
         string ITransformationContextProvider.GetMetadataValue(object hierarchyObject, string fileName, string metadataName)
         {
-            uint fileItemId;
-            var hierarchy = (IVsHierarchy)hierarchyObject;
-            ErrorHandler.ThrowOnFailure(hierarchy.ParseCanonicalName(fileName, out fileItemId));
+            IVsHierarchy hierarchy = (IVsHierarchy)hierarchyObject;
+            ErrorHandler.ThrowOnFailure(hierarchy.ParseCanonicalName(fileName, out uint fileItemId));
 
             // Try getting metadata from the file itself
-            string metadataValue;
-            var propertyStorage = (IVsBuildPropertyStorage)hierarchyObject;
-            if (ErrorHandler.Succeeded(propertyStorage.GetItemAttribute(fileItemId, metadataName, out metadataValue)))
+            IVsBuildPropertyStorage propertyStorage = (IVsBuildPropertyStorage)hierarchyObject;
+            if (ErrorHandler.Succeeded(propertyStorage.GetItemAttribute(fileItemId, metadataName, out string metadataValue)))
             {
                 return metadataValue;
             }
 
             // Try getting metadata from the parent
-            object parentItemId;
-            ErrorHandler.ThrowOnFailure(hierarchy.GetProperty(fileItemId, (int)__VSHPROPID.VSHPROPID_Parent, out parentItemId));
+            ErrorHandler.ThrowOnFailure(hierarchy.GetProperty(fileItemId, (int)__VSHPROPID.VSHPROPID_Parent, out object parentItemId));
             if (ErrorHandler.Succeeded(propertyStorage.GetItemAttribute((uint)(int)parentItemId, metadataName, out metadataValue)))
             {
                 return metadataValue;
@@ -53,10 +57,9 @@ namespace T4Toolbox.VisualStudio
 
         string ITransformationContextProvider.GetPropertyValue(object hierarchy, string propertyName)
         {
-            var propertyStorage = (IVsBuildPropertyStorage)hierarchy;
+            IVsBuildPropertyStorage propertyStorage = (IVsBuildPropertyStorage)hierarchy;
 
-            string propertyValue;
-            if (ErrorHandler.Failed(propertyStorage.GetPropertyValue(propertyName, null, (uint)_PersistStorageType.PST_PROJECT_FILE, out propertyValue)))
+            if (ErrorHandler.Failed(propertyStorage.GetPropertyValue(propertyName, null, (uint)_PersistStorageType.PST_PROJECT_FILE, out string propertyValue)))
             {
                 // Property does not exist. Return an empty string.
                 propertyValue = string.Empty;
@@ -74,7 +77,7 @@ namespace T4Toolbox.VisualStudio
         /// <param name="outputFiles">
         /// A collection of <see cref="OutputFile"/> objects produced by the template.
         /// </param>
-        void ITransformationContextProvider.UpdateOutputFiles(string inputFile, OutputFile[] outputFiles)
+        async void ITransformationContextProvider.UpdateOutputFiles(string inputFile, OutputFile[] outputFiles)
         {
             if (inputFile == null)
             {
@@ -99,16 +102,27 @@ namespace T4Toolbox.VisualStudio
                 }
             }
 
+            DTE dte = (DTE)await serviceProvider.GetServiceAsync(typeof(DTE)).ConfigureAwait(false);
+            ITextTemplatingEngineHost textTemplatingEngineHost = (ITextTemplatingEngineHost)await serviceProvider.GetServiceAsync(typeof(STextTemplating)).ConfigureAwait(false);
+
             // Validate the output files immediately. Exceptions will be reported by the templating service.
-            var manager = new OutputFileManager(this.serviceProvider, inputFile, outputFiles);
-            manager.Validate();
+            OutputFileManager manager = new OutputFileManager(
+                serviceProvider,
+                dte,
+                textTemplatingEngineHost,
+                inputFile,
+                outputFiles
+                );
+            await manager.ValidateAsync();
 
             // Wait for the default output file to be generated
-            var watcher = new FileSystemWatcher();
-            watcher.Path = Path.GetDirectoryName(inputFile);
-            watcher.Filter = Path.GetFileNameWithoutExtension(inputFile) + "*." + this.GetTransformationOutputExtensionFromHost();
+            FileSystemWatcher watcher = new FileSystemWatcher
+            {
+                Path = Path.GetDirectoryName(inputFile),
+                Filter = Path.GetFileNameWithoutExtension(inputFile) + "*." + await GetTransformationOutputExtensionFromHostAsync()
+            };
 
-            FileSystemEventHandler runManager = (sender, args) =>
+            void runManager(object sender, FileSystemEventArgs args)
             {
                 watcher.Dispose();
 
@@ -120,8 +134,8 @@ namespace T4Toolbox.VisualStudio
                 }
 
                 // Finish updating the output files on the UI thread
-                ThreadHelper.Generic.BeginInvoke(manager.DoWork);
-            };
+                ThreadHelper.Generic.BeginInvoke(async () => await manager.DoWorkAsync());
+            }
 
             watcher.Created += runManager;
             watcher.Changed += runManager;
@@ -134,26 +148,26 @@ namespace T4Toolbox.VisualStudio
         /// <param name="container">
         /// An <see cref="IServiceContainer"/> object that will be providing the <see cref="ITransformationContextProvider"/> service.
         /// </param>
-        internal static void Register(IServiceContainer container)
+        internal static void Register(IAsyncServiceContainer container)
         {
             container.AddService(typeof(ITransformationContextProvider), CreateService, promote: true);
         }
 
-        private static object CreateService(IServiceContainer container, Type serviceType)
+        private static Task<object> CreateService(IAsyncServiceContainer container, CancellationToken cancellationToken, Type serviceType)
         {
             if (serviceType == typeof(ITransformationContextProvider))
             {
-                return new TransformationContextProvider(container);
+                return System.Threading.Tasks.Task.FromResult<object>(new TransformationContextProvider(container as IAsyncServiceProvider2));
             }
 
-            return null;
+            return System.Threading.Tasks.Task.FromResult<object>(null);
         }
 
-        private string GetTransformationOutputExtensionFromHost()
+        private async Task<string> GetTransformationOutputExtensionFromHostAsync()
         {
-            var components = (ITextTemplatingComponents)this.serviceProvider.GetService(typeof(STextTemplating));
-            var callback = components.Callback as TextTemplatingCallback; // Callback can be passed to ITextTemplating.ProcessTemplate by user code.
-            if (callback == null)
+            ITextTemplatingComponents components = (ITextTemplatingComponents)await serviceProvider.GetServiceAsync(typeof(STextTemplating));
+            // Callback can be passed to ITextTemplating.ProcessTemplate by user code.
+            if (!(components.Callback is TextTemplatingCallback callback))
             {
                 throw new InvalidOperationException("A TextTemplatingCallback is expected from ITextTemplatingComponents.Callback.");
             }

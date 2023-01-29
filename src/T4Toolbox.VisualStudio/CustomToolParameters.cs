@@ -14,6 +14,7 @@ namespace T4Toolbox.VisualStudio
     using System.Reflection;
     using System.Text.RegularExpressions;
     using Microsoft.VisualStudio;
+    using Microsoft.VisualStudio.Shell;
     using Microsoft.VisualStudio.Shell.Interop;
     using Microsoft.VisualStudio.TextTemplating;
     using Microsoft.VisualStudio.TextTemplating.VSHost;
@@ -40,7 +41,7 @@ namespace T4Toolbox.VisualStudio
             "<\\#\\@\\s*parameter\\s+name\\s*=\\s*\"(?<" + NameGroup + ">[^\"]*)\"\\s+type\\s*=\\s*\"(?<" + TypeGroup + ">[^\"]*)\"\\s*\\#>",
             RegexOptions.IgnoreCase);
 
-        private readonly IServiceProvider serviceProvider;
+        private readonly IAsyncServiceProvider2 serviceProvider;
         private readonly IVsHierarchy project;
         private readonly uint projectItemId;
 
@@ -48,7 +49,7 @@ namespace T4Toolbox.VisualStudio
         private ITextTemplating templatingService;
         private string[] assemblyReferences;
 
-        internal CustomToolParameters(IServiceProvider serviceProvider, IVsHierarchy project, uint projectItemId)
+        internal CustomToolParameters(IAsyncServiceProvider2 serviceProvider, IVsHierarchy project, uint projectItemId)
         {
             Debug.Assert(serviceProvider != null, "serviceProvider");
             Debug.Assert(project != null, "project");
@@ -136,7 +137,7 @@ namespace T4Toolbox.VisualStudio
         /// </summary>
         public PropertyDescriptorCollection GetProperties()
         {
-            return this.GetProperties(null);
+            return GetProperties(null);
         }
 
         /// <summary>
@@ -144,23 +145,22 @@ namespace T4Toolbox.VisualStudio
         /// </summary>
         public PropertyDescriptorCollection GetProperties(Attribute[] attributes)
         {
-            this.templatingService = (ITextTemplating)this.serviceProvider.GetService(typeof(STextTemplating));
-            this.templatingHost = (ITextTemplatingEngineHost)this.templatingService;
+            templatingService = (ITextTemplating)serviceProvider.GetServiceAsync(typeof(STextTemplating)).Result;
+            templatingHost = (ITextTemplatingEngineHost)templatingService;
 
-            string templateFileName;
-            if (this.ResolveTemplate(out templateFileName))
+            if (ResolveTemplate(out string templateFileName))
             {
                 string templateContent = File.ReadAllText(templateFileName, EncodingHelper.GetEncoding(templateFileName));
 
-                this.templatingService.PreprocessTemplate(templateFileName, templateContent, null, "TemporaryClass", "T4Toolbox", out this.assemblyReferences);
-                for (int i = 0; i < this.assemblyReferences.Length; i++)
+                templatingService.PreprocessTemplate(templateFileName, templateContent, null, "TemporaryClass", "T4Toolbox", out assemblyReferences);
+                for (int i = 0; i < assemblyReferences.Length; i++)
                 {
-                    this.assemblyReferences[i] = this.templatingHost.ResolveAssemblyReference(this.assemblyReferences[i]);
+                    assemblyReferences[i] = templatingHost.ResolveAssemblyReference(assemblyReferences[i]);
                 }
 
-                var parameters = new List<CustomToolParameter>();
-                this.ParseParameters(templateContent, parameters);
-                return new PropertyDescriptorCollection(parameters.Cast<PropertyDescriptor>().ToArray());                
+                List<CustomToolParameter> parameters = new List<CustomToolParameter>();
+                ParseParameters(templateContent, parameters);
+                return new PropertyDescriptorCollection(parameters.Cast<PropertyDescriptor>().ToArray());
             }
 
             return PropertyDescriptorCollection.Empty;
@@ -185,7 +185,7 @@ namespace T4Toolbox.VisualStudio
         internal void GetProjectItem(out IVsBuildPropertyStorage project, out uint itemId)
         {
             project = (IVsBuildPropertyStorage)this.project;
-            itemId = this.projectItemId;
+            itemId = projectItemId;
         }
 
         private void ParseParameters(string templateContent, List<CustomToolParameter> parameters)
@@ -195,10 +195,11 @@ namespace T4Toolbox.VisualStudio
             foreach (Match includeMatch in includeMatches)
             {
                 string includedFile = includeMatch.Groups[FileGroup].Value;
-                string loadedContent, loadedFile;
-                if (this.templatingHost.LoadIncludeText(includedFile, out loadedContent, out loadedFile))
+#pragma warning disable IDE0059 // Unnecessary assignment of a value
+                if (templatingHost.LoadIncludeText(includedFile, out string loadedContent, out string loadedFile))
                 {
-                    this.ParseParameters(loadedContent, parameters);
+#pragma warning restore IDE0059 // Unnecessary assignment of a value
+                    ParseParameters(loadedContent, parameters);
                 }
             }
 
@@ -206,7 +207,7 @@ namespace T4Toolbox.VisualStudio
             MatchCollection matches = ParameterExpression.Matches(templateContent);
             foreach (Match parameterMatch in matches)
             {
-                parameters.Add(this.CreateParameter(parameterMatch));
+                parameters.Add(CreateParameter(parameterMatch));
             }
         }
 
@@ -214,13 +215,11 @@ namespace T4Toolbox.VisualStudio
         {
             templateFileName = string.Empty;
 
-            string inputFileName;
-            ErrorHandler.ThrowOnFailure(this.project.GetCanonicalName(this.projectItemId, out inputFileName));
+            ErrorHandler.ThrowOnFailure(project.GetCanonicalName(projectItemId, out string inputFileName));
 
-            var propertyStorage = (IVsBuildPropertyStorage)this.project;
+            IVsBuildPropertyStorage propertyStorage = (IVsBuildPropertyStorage)project;
 
-            string generator;
-            if (ErrorHandler.Failed(propertyStorage.GetItemAttribute(this.projectItemId, ItemMetadata.Generator, out generator)))
+            if (ErrorHandler.Failed(propertyStorage.GetItemAttribute(projectItemId, ItemMetadata.Generator, out string generator)))
             {
                 return false;
             }
@@ -231,7 +230,7 @@ namespace T4Toolbox.VisualStudio
             }
             else if (string.Equals(generator, ScriptFileGenerator.Name, StringComparison.OrdinalIgnoreCase))
             {
-                if (ErrorHandler.Failed(propertyStorage.GetItemAttribute(this.projectItemId, ItemMetadata.LastGenOutput, out templateFileName)))
+                if (ErrorHandler.Failed(propertyStorage.GetItemAttribute(projectItemId, ItemMetadata.LastGenOutput, out templateFileName)))
                 {
                     return false;
                 }
@@ -240,12 +239,12 @@ namespace T4Toolbox.VisualStudio
             }
             else if (string.Equals(generator, TemplatedFileGenerator.Name, StringComparison.OrdinalIgnoreCase))
             {
-                if (ErrorHandler.Failed(propertyStorage.GetItemAttribute(this.projectItemId, ItemMetadata.Template, out templateFileName)))
+                if (ErrorHandler.Failed(propertyStorage.GetItemAttribute(projectItemId, ItemMetadata.Template, out templateFileName)))
                 {
                     return false;
                 }
 
-                var templateLocator = (TemplateLocator)this.serviceProvider.GetService(typeof(TemplateLocator));
+                TemplateLocator templateLocator = (TemplateLocator)serviceProvider.GetServiceAsync(typeof(TemplateLocator)).Result;
                 if (!templateLocator.LocateTemplate(inputFileName, ref templateFileName))
                 {
                     return false;
@@ -263,7 +262,7 @@ namespace T4Toolbox.VisualStudio
             Type type = null;
             try
             {
-                type = Type.GetType(typeName, throwOnError: true, assemblyResolver: null, typeResolver: this.ResolveType);
+                type = Type.GetType(typeName, throwOnError: true, assemblyResolver: null, typeResolver: ResolveType);
             }
             catch (TypeLoadException e)
             {
@@ -272,10 +271,9 @@ namespace T4Toolbox.VisualStudio
             }
 
             string name = match.Groups[NameGroup].Value;
-            return new CustomToolParameter(name, type, description);            
+            return new CustomToolParameter(name, type, description);
         }
 
-        [SuppressMessage("Microsoft.Reliability", "CA2001:AvoidCallingProblematicMethods", MessageId = "System.Reflection.Assembly.LoadFrom", Justification = "That's how the T4 Engine loads assemblies.")]
         private Type ResolveType(Assembly assembly, string typeName, bool ignoreCase)
         {
             // Try among assemblies already loaded in the current AppDomain
@@ -290,7 +288,7 @@ namespace T4Toolbox.VisualStudio
             }
 
             // Try among assemblies referenced by the template
-            foreach (string assemblyFileName in this.assemblyReferences)
+            foreach (string assemblyFileName in assemblyReferences)
             {
                 Assembly referencedAssembly = Assembly.LoadFrom(assemblyFileName);
                 Type type = referencedAssembly.GetType(typeName, false, ignoreCase);

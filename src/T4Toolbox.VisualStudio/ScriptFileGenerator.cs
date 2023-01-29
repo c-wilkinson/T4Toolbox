@@ -45,18 +45,18 @@ namespace T4Toolbox.VisualStudio
         protected override byte[] GenerateCode(string inputFileName, string inputFileContent)
         {
             return
-                this.GenerateFromAssociatedTemplateFile(inputFileName) ??
-                this.GenerateFromExistingScriptFile(inputFileName) ?? 
-                this.GenerateNewScriptFile(inputFileName);
+                GenerateFromAssociatedTemplateFile(inputFileName) ??
+                GenerateFromExistingScriptFile(inputFileName) ?? 
+                GenerateNewScriptFile(inputFileName);
         }
 
         private byte[] GenerateFromExistingScriptFile(string inputFileName)
         {
-            string outputFileName = Path.ChangeExtension(inputFileName, this.GetDefaultExtension());
+            string outputFileName = Path.ChangeExtension(inputFileName, GetDefaultExtension());
             if (File.Exists(outputFileName))
             {
                 // If the output file is opened in Visual Studio editor, save it to prevent the "Run Custom Tool" implementation from silently discarding changes.
-                Document outputDocument = this.Dte.Documents.Cast<Document>().SingleOrDefault(d => d.FullName == outputFileName);
+                Document outputDocument = Dte.Documents.Cast<Document>().SingleOrDefault(d => d.FullName == outputFileName);
                 if (outputDocument != null && !outputDocument.Saved)
                 {
                     // Save the script file if it was modified
@@ -72,24 +72,22 @@ namespace T4Toolbox.VisualStudio
 
         private byte[] GenerateFromAssociatedTemplateFile(string inputFileName)
         {
-            var hierarchy = (IVsHierarchy)this.GetService(typeof(IVsHierarchy));
+            IVsHierarchy hierarchy = (IVsHierarchy)GetService(typeof(IVsHierarchy));
 
-            uint inputItemId;
-            ErrorHandler.ThrowOnFailure(hierarchy.ParseCanonicalName(inputFileName, out inputItemId));
+            ErrorHandler.ThrowOnFailure(hierarchy.ParseCanonicalName(inputFileName, out uint inputItemId));
 
-            string templatePath;
-            var propertyStorage = (IVsBuildPropertyStorage)hierarchy;
-            if (ErrorHandler.Failed(propertyStorage.GetItemAttribute(inputItemId, ItemMetadata.Template, out templatePath)))
+            IVsBuildPropertyStorage propertyStorage = (IVsBuildPropertyStorage)hierarchy;
+            if (ErrorHandler.Failed(propertyStorage.GetItemAttribute(inputItemId, ItemMetadata.Template, out string templatePath)))
             {
                 return null;
             }
 
             // Remove <Template> metadata from the project item and refresh the properties window
             ErrorHandler.ThrowOnFailure(propertyStorage.SetItemAttribute(inputItemId, ItemMetadata.Template, null));
-            var propertyBrowser = (IVSMDPropertyBrowser)this.GlobalServiceProvider.GetService(typeof(SVSMDPropertyBrowser));
+            IVSMDPropertyBrowser propertyBrowser = (IVSMDPropertyBrowser)GlobalServiceProvider.GetService(typeof(SVSMDPropertyBrowser));
             propertyBrowser.Refresh();
 
-            var templateLocator = (TemplateLocator)this.GlobalServiceProvider.GetService(typeof(TemplateLocator));
+            TemplateLocator templateLocator = (TemplateLocator)GlobalServiceProvider.GetService(typeof(TemplateLocator));
             if (!templateLocator.LocateTemplate(inputFileName, ref templatePath))
             {
                 return null;
@@ -103,7 +101,7 @@ namespace T4Toolbox.VisualStudio
             string language;
             string extension;
             const string VisualBasicProject = "{F184B08F-C81C-45F6-A57F-5ABD9991F28F}";
-            Project currentProject = this.Dte.Solution.FindProjectItem(inputFileName).ContainingProject;
+            Project currentProject = Dte.Solution.FindProjectItem(inputFileName).ContainingProject;
             if (string.Equals(currentProject.Kind, VisualBasicProject, StringComparison.OrdinalIgnoreCase))
             {
                 language = "VB";
