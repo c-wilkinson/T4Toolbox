@@ -15,14 +15,11 @@ jobs:
         run: nuget restore
       - name: Build
         run: msbuild /p:configuration=Release /p:DeployExtension=false /p:ZipPackageCompressionLevel=normal
-      - name: copy file
-        uses: canastro/copy-file-action@master
-        with:
-          source: "T4Toolbox/src/T4Toolbox.vsix/bin/Release/T4Toolbox.2022.0.0.1.vsix"
-          target: "T4Toolbox.2022.0.0.1.vsix"
       - name: Upload Changes
         if: always()
         run: |
+          mkdir Extension
+          mv \src\T4Toolbox.vsix\bin\Release\T4Toolbox.2022.0.0.1.vsix Extension/T4Toolbox.2022.0.0.1.vsix
           git config --global user.name 'GithubBot'
           git remote set-url origin https://x-access-token:${{ secrets.TOKEN_GITHUB }}@github.com/${{ github.repository }}
           git diff-index --quiet HEAD || git commit --allow-empty -am "Automated changes"
