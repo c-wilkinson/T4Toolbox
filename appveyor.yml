@@ -18,12 +18,6 @@ configuration: Release
 
 before_build:
 - nuget restore
-- ps: >-
-    Import-Module .\build\Module.psm1
-
-    if (!$env:APPVEYOR_PULL_REQUEST_NUMBER) {
-        CreateAssemblyKeyFile "T4ToolboxSnk" "T4Toolbox.snk"
-    }
 
 build:
   parallel: true
