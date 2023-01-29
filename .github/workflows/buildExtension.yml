@@ -1,0 +1,44 @@
+name: Build extension
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout the code
+        uses: actions/checkout@v2
+      - name: Add nuget to PATH
+        uses: nuget/setup-nuget@v1
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v1.0.2
+      - name: Restore
+        run: nuget restore
+      - name: Build
+        run: msbuild /p:configuration=Release /p:DeployExtension=false /p:ZipPackageCompressionLevel=normal
+      - name: copy file
+        uses: canastro/copy-file-action@master
+        with:
+          source: "T4Toolbox\src\T4Toolbox.vsix\bin\Release\T4Toolbox.2022.0.0.1.vsix"
+          target: "T4Toolbox.2022.0.0.1.vsix"
+      - name: Upload Changes
+        if: always()
+        run: |
+          git config --global user.name 'GithubBot'
+          git remote set-url origin https://x-access-token:${{ secrets.TOKEN_GITHUB }}@github.com/${{ github.repository }}
+          git diff-index --quiet HEAD || git commit --allow-empty -am "Automated changes"
+          git push
+      - name: Create status check
+        env:
+          GITHUB_TOKEN: ${{ secrets.TOKEN_GITHUB }}
+        run: |
+          BUILD_COMMIT=$(git rev-parse HEAD)
+          curl \
+          -X POST \
+          -H "Authorization: Bearer $GITHUB_TOKEN" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/{org}/{repo}/check-runs \
+          -d '{"name":"build", "head_sha": "'"$BUILD_COMMIT"'", "status": "completed", "conclusion": "success" }'

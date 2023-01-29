@@ -1,7 +1,7 @@
 # CI build definition for https://ci.appveyor.com/project/olegsych/t4toolbox
 # To learn more, see http://www.appveyor.com/docs/appveyor-yml 
 
-version: 15.0.0.{build}
+version: 1.0.0.{build}
 
 image: Visual Studio 2022
 
